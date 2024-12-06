@@ -1,0 +1,142 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ESP8266HTTPClient.h>
+#include <ArduinoJson.h>
+#include "secrets.h"
+// LCD setup
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Adjust the I2C address if needed
+
+// WiFi credentials
+//const char* ssid = "yourSSID";
+//const char* password = "yourPASSWORD";
+
+// Exchange Rate API
+const char* api_url = "https://v6.exchangerate-api.com/v6/f584e9550bffb7f902203449/latest/USD";
+
+// Variables for exchange rates
+float rateEUR = 0.0;
+float rateGBP = 0.0;
+float rateZAR = 0.0;
+float rateCAD = 0.0;
+
+// Variables for last update
+char updateDate[20] = "N/A";
+char updateTime[20] = "N/A";
+
+// Page navigation
+int currentPage = 0; // 0: Exchange Rates, 1: Last Update
+unsigned long lastSwitch = 0;
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Connecting WiFi...");
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected!");
+  lcd.setCursor(0, 1);
+  lcd.print("WiFi Connected!");
+
+  delay(2000);
+  lcd.clear();
+
+  // Fetch exchange rates
+  fetchExchangeRates();
+}
+
+void loop() {
+  // Automatically switch pages every 5 seconds
+  if (millis() - lastSwitch > 5000) {
+    currentPage = (currentPage + 1) % 4; // Cycle through 4 pages
+    displayPage(currentPage);
+    lastSwitch = millis();
+  }
+}
+
+void fetchExchangeRates() {
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClientSecure client;
+    client.setInsecure(); // Skip SSL validation
+
+    HTTPClient http;
+    http.begin(client, api_url);
+
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      String payload = http.getString();
+      Serial.println("Response:");
+      Serial.println(payload);
+
+      // Parse JSON
+      StaticJsonDocument<2048> doc;
+      DeserializationError error = deserializeJson(doc, payload);
+      if (error) {
+        Serial.print("JSON deserialization failed: ");
+        Serial.println(error.f_str());
+        return;
+      }
+
+      // Extract rates
+      rateEUR = doc["conversion_rates"]["EUR"];
+      rateGBP = doc["conversion_rates"]["GBP"];
+      rateZAR = doc["conversion_rates"]["ZAR"]; // USD -> ZAR rate
+      rateCAD = doc["conversion_rates"]["CAD"]; // USD -> CAD rate
+
+      // Extract and split the update time into date and time
+      const char* lastUpdateStr = doc["time_last_update_utc"];
+      strncpy(updateDate, lastUpdateStr, 16); // Extracts "Mon, 25 Nov 2024"
+      updateDate[16] = '\0';                 // Null-terminate the string
+      strncpy(updateTime, lastUpdateStr + 17, 20); // Extracts "00:00:01 +0000"
+    } else {
+      Serial.printf("HTTP Error: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("WiFi not connected.");
+  }
+}
+
+void displayPage(int page) {
+  lcd.clear(); // Clear the display for each page
+
+  if (page == 0) {
+    // Page 1: Exchange Rates (USD -> EUR and USD -> GBP)
+    lcd.setCursor(0, 0);
+    lcd.print("USD->EUR: ");
+    lcd.print(rateEUR, 2); // Display EUR rate
+    lcd.setCursor(0, 1);
+    lcd.print("USD->GBP: ");
+    lcd.print(rateGBP, 2); // Display GBP rate
+  } else if (page == 1) {
+    // Page 2: USD -> ZAR
+    lcd.setCursor(0, 0);
+    lcd.print("USD->ZAR: ");
+    lcd.print(rateZAR, 2); // Display ZAR rate
+    lcd.setCursor(0, 1);
+    lcd.print("USD->CAD: ");
+    lcd.print(rateCAD, 2);
+  } else if (page == 2) {
+    // Page 3: Last Update - Date
+    lcd.setCursor(0, 0);
+    lcd.print("Last Update:");
+    lcd.setCursor(0, 1);
+    lcd.print(updateDate); // Display the date
+  } else if (page == 3) {
+    // Page 4: Last Update - Time
+    lcd.setCursor(0, 0);
+    lcd.print("Time:");
+    lcd.setCursor(0, 1);
+    lcd.print(updateTime); // Display the time
+  }
+}
